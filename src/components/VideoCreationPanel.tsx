@@ -18,8 +18,14 @@ interface VideoRecord {
   template_id: number;
 }
 
+interface GeneratedScript {
+  text: string;
+  examName: string;
+}
+
 export default function VideoCreationPanel({ courseId, question }: VideoCreationPanelProps) {
   const [videoRecord, setVideoRecord] = useState<VideoRecord | null>(null);
+  const [generatedScript, setGeneratedScript] = useState<GeneratedScript | null>(null);
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -32,22 +38,39 @@ export default function VideoCreationPanel({ courseId, question }: VideoCreation
     setError(null);
 
     try {
+      // First, get the exam name
+      const { data: courseData } = await supabase
+        .from('courses')
+        .select('exam_id')
+        .eq('id', courseId)
+        .maybeSingle();
+
+      let examName = 'this exam';
+      if (courseData?.exam_id) {
+        const { data: examData } = await supabase
+          .from('exams')
+          .select('name')
+          .eq('id', courseData.exam_id)
+          .maybeSingle();
+        if (examData) examName = examData.name;
+      }
+
       const prompt = `Create an engaging educational video script for this question. Follow this exact structure:
 
-1. Start with: "Hello everyone, today we are going to solve a question for [exam name] entrance exam."
+1. Start with: "Hello everyone, today we are going to solve a question for ${examName} entrance exam."
 2. Say: "So the question says:" then read the question statement word by word
 3. For MCQ/MSQ questions, read each option clearly: "Option A: [text], Option B: [text]" etc.
-4. After reading the question and options, say: "If you are looking for a complete guide for this exam or more practice questions and guidance, follow and comment the exam name and it will be in your DMs."
-5. Pause for 5 seconds (indicate with [PAUSE 5s])
-6. Then reveal: "The answer is: [correct answer]"
-7. Finally explain the solution clearly and concisely
+4. After reading the question and options, say: "Try solving this question on your own. I'll give you 5 seconds." [PAUSE 5 SECONDS - indicate with [COUNTDOWN: 5...4...3...2...1]]
+5. Then reveal: "The answer is: ${question.answer}"
+6. Finally explain the solution: ${question.solution || 'Provide a clear explanation'}
+7. End with: "If you are looking for a complete guide for ${examName} or more practice questions and guidance, follow and comment ${examName} and it will be in your DMs."
 
 Question: ${question.question_statement}
 ${question.options ? `Options: ${question.options}` : ''}
 Answer: ${question.answer}
 ${question.solution ? `Solution: ${question.solution}` : ''}
 
-Make the script conversational, engaging, and suitable for voice-over. Use simple language that sounds natural when spoken.`;
+Make the script conversational, engaging, and suitable for voice-over. Use simple language that sounds natural when spoken. The script should be read exactly as written by our text-to-speech system.`;
 
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${GEMINI_API_KEY}`, {
         method: 'POST',
@@ -64,14 +87,29 @@ Make the script conversational, engaging, and suitable for voice-over. Use simpl
 
       if (!script) throw new Error('No script generated');
 
+      setGeneratedScript({ text: script, examName });
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(null);
+    }
+  };
+
+  const saveScriptToDatabase = async () => {
+    if (!generatedScript) return;
+
+    setLoading('saving');
+    setError(null);
+
+    try {
       const { data: video, error: dbError } = await supabase
         .from('videos')
         .insert({
           course_id: courseId,
           question_id: question.id,
-          script: script,
+          script: generatedScript.text,
           status: 'script_generated',
-          template_id: Math.floor(Math.random() * 6) + 1
+          template_id: Math.floor(Math.random() * 5) + 1
         })
         .select()
         .single();
@@ -84,6 +122,7 @@ Make the script conversational, engaging, and suitable for voice-over. Use simpl
         .eq('id', question.id);
 
       setVideoRecord(video);
+      setGeneratedScript(null);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -273,7 +312,7 @@ Make the script conversational, engaging, and suitable for voice-over. Use simpl
           <div className="flex-1">
             <button
               onClick={generateScript}
-              disabled={loading !== null}
+              disabled={loading !== null || videoRecord !== null}
               className={`w-full flex items-center justify-between p-4 rounded-lg transition-all ${
                 getStepStatus('script') === 'completed'
                   ? 'bg-green-600 text-white'
@@ -296,8 +335,39 @@ Make the script conversational, engaging, and suitable for voice-over. Use simpl
           </div>
         </div>
 
+        {/* Script Preview */}
+        {generatedScript && !videoRecord && (
+          <div className="ml-8 space-y-4">
+            <div className="p-4 bg-slate-700 rounded-lg max-h-96 overflow-y-auto">
+              <h4 className="text-white font-medium mb-2">Generated Script Preview:</h4>
+              <p className="text-slate-300 text-sm whitespace-pre-wrap">{generatedScript.text}</p>
+            </div>
+            <button
+              onClick={saveScriptToDatabase}
+              disabled={loading !== null}
+              className="w-full bg-green-600 hover:bg-green-700 text-white font-medium py-3 px-4 rounded-lg transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              {loading === 'saving' ? (
+                <>
+                  <Loader className="w-5 h-5 animate-spin" />
+                  Saving to Database...
+                </>
+              ) : (
+                <>
+                  <CheckCircle className="w-5 h-5" />
+                  Save to Database
+                </>
+              )}
+            </button>
+          </div>
+        )}
+
         {videoRecord?.script && (
           <div className="ml-8 p-4 bg-slate-700 rounded-lg">
+            <h4 className="text-green-400 font-medium mb-2 flex items-center gap-2">
+              <CheckCircle className="w-4 h-4" />
+              Script saved to database
+            </h4>
             <p className="text-slate-300 text-sm whitespace-pre-wrap">{videoRecord.script.substring(0, 200)}...</p>
           </div>
         )}
